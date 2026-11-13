@@ -1,0 +1,29 @@
+Cloudflare Cache Rule for comments-through-cache (cases C13 and C14)
+
+Cache Rules are available on every Cloudflare plan (Free, Pro, Business,
+Enterprise). Create the rule in the dashboard under Caching > Cache Rules, or
+through the Rulesets API in the http_request_cache_settings phase.
+
+Rule name:   Bypass cache for commenters and the post-comment redirect
+When incoming requests match: Custom filter expression
+Expression:
+
+(http.cookie contains "comment_author_") or (http.cookie contains "wordpress_logged_in_") or (http.cookie contains "wp-postpass_") or (http.request.uri.query contains "unapproved=") or (http.request.uri.query contains "moderation-hash=")
+
+Then: Cache eligibility = Bypass cache
+
+Place this rule AFTER (below) any rule that makes HTML eligible for cache.
+When several Cache Rules match, settings from later rules override earlier
+ones, so the bypass must come last.
+
+C15 and C16 at the edge: Cloudflare does not cache POST requests, and by
+default it does not cache a response that carries Set-Cookie. A rule that
+forces caching of everything can change that; keep the bypass rule last.
+
+Warning: a rule that overrides the edge TTL for HTML may ignore the origin's
+Cache-Control, including no-store. That is why the redirect URL needs this
+explicit bypass, not only the plugin's no-store header.
+
+Purge: set COMMENTS_THROUGH_CACHE_PURGERS to include "cloudflare" and define
+COMMENTS_THROUGH_CACHE_CF_ZONE_ID and COMMENTS_THROUGH_CACHE_CF_API_TOKEN (a
+token with the Zone > Cache Purge permission on this zone only).
