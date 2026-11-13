@@ -127,6 +127,12 @@ final class CookieSetter
             }
         }
 
+        // This response sets cookies on a request that may no longer carry a
+        // bypass cookie. Keep it out of every cache even if a layer breaks
+        // C15, or the expiry would be replayed to other readers.
+        $this->response->header('Cache-Control', 'private, no-store, max-age=0');
+        $this->response->header('X-Accel-Expires', '0');
+
         $past = $this->baseOptions(($this->clock)() - 31536000);
         $cleared = ['email'];
         $this->response->setCookie('comment_author_email_' . self::cookieHash(), ' ', $past);

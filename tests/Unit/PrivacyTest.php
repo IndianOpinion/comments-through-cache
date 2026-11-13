@@ -85,4 +85,12 @@ final class PrivacyTest extends TestCase
         $this->assertStringNotContainsString(self::TOKEN, $everything);
         $this->assertDoesNotMatchRegularExpression('/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}/', $everything);
     }
+
+    public function testConfigDescriptionMasksCredentialsInTheEndpoint(): void
+    {
+        $config = Config::fromArray(['HTTP_ENDPOINT' => 'http://purger:' . self::TOKEN . '@127.0.0.1:6081{path}']);
+        $endpoint = $config->describe()['http_endpoint'];
+        $this->assertSame('http://***@127.0.0.1:6081{path}', $endpoint);
+        $this->assertSame('http://127.0.0.1/{path}', Config::fromArray(['HTTP_ENDPOINT' => 'http://127.0.0.1/{path}'])->describe()['http_endpoint']);
+    }
 }

@@ -274,7 +274,7 @@ final class Config
             'notice' => $this->noticeEnabled() ? 'on' : 'off',
             'early_expiry' => $this->earlyExpiry() ? 'on' : 'off',
             'purgers' => implode(',', $this->purgerNames()),
-            'http_endpoint' => $this->httpEndpoint() ?? 'not set',
+            'http_endpoint' => self::maskUserInfo($this->httpEndpoint()) ?? 'not set',
             'http_method' => $this->httpMethod(),
             'file_path' => $this->filePath() ?? 'not set',
             'file_levels' => $this->fileLevels(),
@@ -326,6 +326,18 @@ final class Config
             return $default;
         }
         return max($min, min($max, (int) $value));
+    }
+
+    /**
+     * Hides credentials an operator put in an endpoint URL
+     * (http://user:pass@host/...), so the config command never prints them.
+     */
+    private static function maskUserInfo(?string $url): ?string
+    {
+        if ($url === null) {
+            return null;
+        }
+        return (string) preg_replace('#^([a-z][a-z0-9+.-]*://)[^/@]*@#i', '$1***@', $url);
     }
 
     private static function safeName(string $name): string

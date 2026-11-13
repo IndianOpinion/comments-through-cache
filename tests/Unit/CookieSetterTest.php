@@ -255,6 +255,16 @@ final class CookieSetterTest extends TestCase
             $this->assertLessThan(self::NOW, $cookie['options']['expires']);
         }
         $this->assertSame([[['email']]], \WpStub::firings('comments_through_cache_cookie_cleared'));
+        $this->assertSame('private, no-store, max-age=0', $this->response->headers['Cache-Control'] ?? null, 'a response that expires cookies is never stored');
+        $this->assertSame('0', $this->response->headers['X-Accel-Expires'] ?? null);
+    }
+
+    public function testEarlyExpiryThatKeepsTheCookieSendsNoCacheHeaders(): void
+    {
+        $this->withMarker(3600);
+        $this->comment('0');
+        $this->setter()->maybeExpireEarly();
+        $this->assertSame([], $this->response->headers);
     }
 
     public function testEarlyExpiryClearsAllThreeWhenTheyWereSet(): void
