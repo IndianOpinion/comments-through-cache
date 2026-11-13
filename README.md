@@ -231,10 +231,13 @@ the commenter cookie holds an email address.
 4. **On moderation.** Any change that makes a comment enter or leave the
    approved state, or an edit of an approved comment, queues the post. At
    shutdown, after the response is sent where PHP-FPM allows, the queue
-   sends each post's purge set once: the permalink, the comment pages that
-   exist (plus one, capped at ten), the comments feed, and anything the
-   filter adds. Origin purgers run before edge purgers so the CDN cannot
-   refetch a stale origin copy. Failures are logged and never block
+   builds each post's purge set (the permalink, the comment pages that
+   exist plus one, capped at ten, the comments feed, and anything the
+   filter adds), merges the sets of every queued post, removes duplicates,
+   and gives each purger one call for the lot. Bulk moderation on twenty
+   posts is one Cloudflare request, not twenty. Every origin purger
+   finishes before any edge purger starts, so the CDN cannot refetch a
+   stale origin copy. Failures are logged and never block
    moderation; the page then updates at its cache TTL.
 
 Purgers:
@@ -274,8 +277,8 @@ Text you can adapt for a cookie policy:
 > **comments_through_cache_&lt;hash&gt;**. Set when you post a comment that
 > waits for moderation, so that you can see your own comment while it waits.
 > The first holds the email address you entered; the second holds only the
-> time it was set. Both last at most one day and are removed as soon as none
-> of your comments are waiting.
+> time it was set. Both last at most one day (adjust if you change the
+> lifetime) and are removed once none of your comments are waiting.
 
 To turn the cookie off entirely:
 
@@ -323,8 +326,9 @@ and nothing listens to it.
   (`examples/purge-listing-pages.php`).
 - A comment posted without an email address cannot be shown through the
   cookie, because core looks held comments up by email.
-- The flush budget is checked between purgers and between requests; a single
-  slow request can still take up to the HTTP timeout.
+- The flush budget is checked between purgers and between requests, and each
+  request's timeout is cut to what is left of the budget (never below one
+  second), so a flush can overrun the budget by at most about a second.
 - No settings screen in 0.1.0.
 
 ## FAQ

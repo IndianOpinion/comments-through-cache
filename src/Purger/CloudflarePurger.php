@@ -98,7 +98,7 @@ final class CloudflarePurger implements Purger, Configurable, DeadlineAware
                 $response = $this->client->request('POST', $endpoint, [
                     'Authorization' => 'Bearer ' . (string) $this->token,
                     'Content-Type' => 'application/json',
-                ], $body, $this->timeout);
+                ], $body, $this->timeoutLeft());
             } catch (PurgeException $e) {
                 $errors[] = $e->getMessage();
                 continue;
@@ -124,6 +124,19 @@ final class CloudflarePurger implements Purger, Configurable, DeadlineAware
         $code = isset($first['code']) && is_scalar($first['code']) ? (string) $first['code'] : '?';
         $message = isset($first['message']) && is_string($first['message']) ? substr($first['message'], 0, 120) : '';
         return sprintf(' (error %s: %s)', $code, $message);
+    }
+
+    /**
+     * The per-request timeout, cut to what is left of the flush budget so a
+     * hanging endpoint cannot hold the request long past the budget (F9).
+     */
+    private function timeoutLeft(): int
+    {
+        if ($this->deadline === null) {
+            return $this->timeout;
+        }
+        $left = (int) ceil($this->deadline - ($this->clock)());
+        return max(1, min($this->timeout, $left));
     }
 
     public function layer(): string

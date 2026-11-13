@@ -229,6 +229,29 @@ final class PurgersTest extends TestCase
         $this->assertSame(3, $client->requests[0]['timeout']);
     }
 
+    public function testRequestTimeoutIsCutToTheRemainingBudget(): void
+    {
+        $now = 100.0;
+        $clock = static function () use (&$now): float {
+            return $now;
+        };
+        $client = new FakeHttpClient(static function () use (&$now): HttpResponse {
+            $now += 1.5;
+            return new HttpResponse(200, [], '{"success":true}');
+        });
+        $http = new HttpPurger($client, 'http://127.0.0.1/purge{path}', 'PURGE', 3);
+        $http->setDeadline(102.0, $clock);
+        $http->purge(['https://example.com/a/', 'https://example.com/b/']);
+        $this->assertSame([2, 1], array_column($client->requests, 'timeout'));
+
+        $client->requests = [];
+        $now = 100.0;
+        $cf = new CloudflarePurger($client, str_repeat('a', 32), 'token', 3);
+        $cf->setDeadline(101.2, $clock);
+        $cf->purge(['https://example.com/a/']);
+        $this->assertSame([2], array_column($client->requests, 'timeout'));
+    }
+
     public function testT46GetMethodAndAllTokens(): void
     {
         $client = new FakeHttpClient();

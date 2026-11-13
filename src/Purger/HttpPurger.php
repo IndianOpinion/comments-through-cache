@@ -82,7 +82,7 @@ final class HttpPurger implements Purger, Configurable, DeadlineAware
             }
             $target = self::expand((string) $this->endpoint, $parts);
             try {
-                $response = $this->client->request($this->method, $target, ['Host' => $parts['host']], null, $this->timeout);
+                $response = $this->client->request($this->method, $target, ['Host' => $parts['host']], null, $this->timeoutLeft());
             } catch (PurgeException $e) {
                 $errors[] = $e->getMessage();
                 continue;
@@ -108,6 +108,19 @@ final class HttpPurger implements Purger, Configurable, DeadlineAware
             '{path}' => isset($parts['path']) && $parts['path'] !== '' ? (string) $parts['path'] : '/',
             '{query}' => $query,
         ]);
+    }
+
+    /**
+     * The per-request timeout, cut to what is left of the flush budget so a
+     * hanging endpoint cannot hold the request long past the budget (F9).
+     */
+    private function timeoutLeft(): int
+    {
+        if ($this->deadline === null) {
+            return $this->timeout;
+        }
+        $left = (int) ceil($this->deadline - ($this->clock)());
+        return max(1, min($this->timeout, $left));
     }
 
     public function layer(): string

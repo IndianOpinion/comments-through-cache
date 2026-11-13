@@ -130,7 +130,13 @@ final class Plugin
         if (!$cli && function_exists('fastcgi_finish_request') && (bool) apply_filters('comments_through_cache_finish_request', true)) {
             fastcgi_finish_request();
         }
-        $this->queue->flush();
+        try {
+            $this->queue->flush();
+        } catch (\Throwable $e) {
+            // G6: a purge filter or listener that throws must not turn the
+            // end of a moderation request into a fatal error.
+            $this->logger->error(sprintf('The purge flush failed: %s: %s', get_class($e), $e->getMessage()));
+        }
     }
 
     /**

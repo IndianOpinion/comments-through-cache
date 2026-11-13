@@ -18,7 +18,7 @@ design decision, including the answers to the open questions in
 | `src/PurgeUrlCollector.php` | Purge set for a post | C20, C21 |
 | `src/PurgeQueue.php` | Per-post queue, layer ordering, error isolation, time budget | C29, C30, F1 to F4, F8, F9 |
 | `src/Purger/*` | `Purger` interface; `ActionPurger`, `HttpPurger`, `FileCachePurger`, `CloudflarePurger`; `Configurable` and `DeadlineAware` | 5.2 |
-| `src/PurgeResult.php` | Value object per purger per post | 5.2 |
+| `src/PurgeResult.php` | Value object per purger per reason in a flush | 5.2 |
 | `src/Checker.php`, `src/CheckReport.php` | Cache checker logic, testable with a fake HTTP client | C31 |
 | `src/Cli/*` | WP-CLI `check`, `purge`, `config` | C31, C32, 5.6 |
 | `src/SiteHealth.php` | One Site Health test | 11, F3, F4 |
@@ -45,8 +45,8 @@ later request with the cookie (bypasses cache)
 moderator acts (wp-admin, REST, XML-RPC, email link, cron)
   transition_comment_status / edit_comment ─ ModerationListener ─ PurgeQueue.add
   shutdown ─ fastcgi_finish_request ─ PurgeQueue.flush
-    for each post: PurgeUrlCollector.forPost
-      origin purgers (config order) then edge purgers
+    for each queued post: PurgeUrlCollector.forPost, merged per reason, deduped
+    origin purgers (config order) then edge purgers, one call per reason
       each call: try/catch, deadline, PurgeResult
     do_action comments_through_cache_purged
 ```
@@ -148,9 +148,18 @@ moderator acts (wp-admin, REST, XML-RPC, email link, cron)
   constants hold and throw `ConfigurationException` from `purge()` when a
   required value is missing (F4). The queue catches it, logs once per
   request per purger, records a failed `PurgeResult` and runs the rest.
+- **Batching across posts.** The queue is keyed by post (first reason
+  wins), but a flush merges the purge sets of every queued post per reason,
+  removes duplicates, and calls each purger once per reason. Purgers are the
+  outer loop, so every origin call ends before the first edge call (C30)
+  across the whole flush, not only within one post. Reason: a bulk action on
+  many posts would otherwise send one Cloudflare request per post, run into
+  the flush budget and the purge rate limit, and leave later posts stale.
+  T35 still holds: each post's set is sent once. A `PurgeResult` therefore
+  describes one purger and one reason, not one post.
 - **Budget.** Checked before each purger call and, inside the HTTP and
-  Cloudflare purgers, before each request. A single request can still run
-  to its HTTP timeout. Dropped URLs are logged as a count, never a list.
+  Cloudflare purgers, before each request, whose timeout is cut to the time
+  left (at least one second). Dropped URLs are logged as a count, never a list.
 - **Comment pages.** Pages are counted from approved top-level comments when
   threading is on (as core does), else all approved comments, and one extra
   page is purged in case a removal just emptied the last page. Capped at 10
@@ -180,7 +189,12 @@ moderator acts (wp-admin, REST, XML-RPC, email link, cron)
   are not followed, so the checker tests exactly the URL given.
 - **Dependencies.** No runtime dependencies. Dev only: PHPUnit 10, PHPStan
   (level 8, with WordPress and WP-CLI stubs), PHP_CodeSniffer (PSR-12).
-  `composer.lock` is not committed, so CI resolves dev tools per PHP version.
+  `composer.lock` is not committed (reviewed for 0.1.0). The plugin has no
+  runtime dependencies, so a lock would pin only dev tools, and it would be
+  resolved on one PHP version while CI runs 8.1 to 8.3; letting each CI job
+  resolve its own versions catches breakage from new tool releases early.
+  Sites install the plugin by copying it or through their own project's
+  lock, never through this one. This matches the programme's libraries.
 - **Tests.** A stub layer in `tests/stubs/wordpress.php` implements the hook
   system and the few core functions used, records database writes, and
   every test asserts in its tear-down that none happened (T48). Each of the

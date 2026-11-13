@@ -8,8 +8,8 @@ use IndianOpinion\CommentsThroughCache\Purger\DeadlineAware;
 use IndianOpinion\CommentsThroughCache\Purger\Purger;
 
 /**
- * Collects purge requests during a request, keyed by post, and sends each
- * post's purge set once at shutdown (C29). Origin purgers run before edge
+ * Collects purge requests during a request, keyed by post, and sends the
+ * merged purge sets once at shutdown (C29). Origin purgers run before edge
  * purgers (C30). Nothing thrown by a purger escapes (F1, F2, F4), and the
  * whole flush is time-boxed (F9).
  */
@@ -65,7 +65,13 @@ final class PurgeQueue
     /**
      * Sends every queued purge set once and empties the queue.
      *
-     * @return list<PurgeResult>
+     * The sets of all queued posts are merged per reason and deduplicated,
+     * so each purger gets one call per reason however many posts were
+     * moderated: bulk approving comments on twenty posts sends one batched
+     * Cloudflare request, not twenty. Every origin purger finishes every
+     * set before any edge purger starts (C30).
+     *
+     * @return list<PurgeResult> One result per purger per reason.
      */
     public function flush(): array
     {
@@ -76,14 +82,17 @@ final class PurgeQueue
         $this->queue = [];
 
         $deadline = ($this->clock)() + $this->budgetSeconds;
-        $purgers = $this->activePurgers();
-        $results = [];
+        $groups = [];
         foreach ($queue as $postId => $reason) {
-            $urls = $this->collector->forPost($postId, $reason);
-            foreach ($this->purgeSet($urls, $reason, $purgers, $deadline) as $result) {
-                $results[] = $result;
+            foreach ($this->collector->forPost($postId, $reason) as $url) {
+                $groups[$reason][$url] = true;
             }
         }
+        $sets = [];
+        foreach ($groups as $reason => $urls) {
+            $sets[$reason] = array_map('strval', array_keys($urls));
+        }
+        $results = $this->runPurgers($sets, $this->activePurgers(), $deadline);
         do_action('comments_through_cache_purged', $results);
         return $results;
     }
@@ -96,7 +105,11 @@ final class PurgeQueue
     public function purgePost(int $postId, string $reason = 'manual'): array
     {
         $urls = $this->collector->forPost($postId, $reason);
-        $results = $this->purgeSet($urls, $reason, $this->activePurgers(), ($this->clock)() + $this->budgetSeconds);
+        $results = $this->runPurgers(
+            $urls === [] ? [] : [$reason => $urls],
+            $this->activePurgers(),
+            ($this->clock)() + $this->budgetSeconds
+        );
         do_action('comments_through_cache_purged', $results);
         return $results;
     }
@@ -129,45 +142,55 @@ final class PurgeQueue
     }
 
     /**
-     * @param list<string> $urls
-     * @param list<Purger> $purgers
+     * Runs each purger, in order, over each URL set. Purgers are the outer
+     * loop so that every origin call ends before the first edge call.
+     *
+     * @param array<string, list<string>> $sets    Reason to URL list.
+     * @param list<Purger>                $purgers
      *
      * @return list<PurgeResult>
      */
-    private function purgeSet(array $urls, string $reason, array $purgers, float $deadline): array
+    private function runPurgers(array $sets, array $purgers, float $deadline): array
     {
-        if ($urls === []) {
-            return []; // F8: nothing public changed.
-        }
         $results = [];
         foreach ($purgers as $purger) {
-            $name = $purger->name();
-            if (($this->clock)() >= $deadline) {
-                $this->logger->error(sprintf('Purge budget exceeded; %d URLs not sent to the %s purger.', count($urls), $name));
-                $results[] = PurgeResult::failure($name, $urls, 'purge budget exceeded');
-                continue;
+            foreach ($sets as $reason => $urls) {
+                if ($urls === []) {
+                    continue; // F8: nothing public changed.
+                }
+                $results[] = $this->runOne($purger, $urls, (string) $reason, $deadline);
             }
-            if ($purger instanceof DeadlineAware) {
-                $purger->setDeadline($deadline, $this->clock);
-            }
-            try {
-                $result = $purger->purge($urls, $reason);
-            } catch (ConfigurationException $e) {
-                $this->logger->errorOnce('config-' . $name, sprintf('The %s purger is misconfigured: %s', $name, $e->getMessage()));
-                $results[] = PurgeResult::failure($name, $urls, 'misconfigured: ' . $e->getMessage());
-                continue;
-            } catch (\Throwable $e) {
-                $this->logger->error(sprintf('The %s purger failed: %s: %s', $name, get_class($e), $e->getMessage()));
-                $results[] = PurgeResult::failure($name, $urls, get_class($e) . ': ' . $e->getMessage());
-                continue;
-            }
-            if (!$result->isSuccess()) {
-                $this->logger->error('Purge incomplete. ' . $result->summary());
-            } else {
-                $this->logger->debug('Purged. ' . $result->summary());
-            }
-            $results[] = $result;
         }
         return $results;
+    }
+
+    /**
+     * @param list<string> $urls
+     */
+    private function runOne(Purger $purger, array $urls, string $reason, float $deadline): PurgeResult
+    {
+        $name = $purger->name();
+        if (($this->clock)() >= $deadline) {
+            $this->logger->error(sprintf('Purge budget exceeded; %d URLs not sent to the %s purger.', count($urls), $name));
+            return PurgeResult::failure($name, $urls, 'purge budget exceeded');
+        }
+        if ($purger instanceof DeadlineAware) {
+            $purger->setDeadline($deadline, $this->clock);
+        }
+        try {
+            $result = $purger->purge($urls, $reason);
+        } catch (ConfigurationException $e) {
+            $this->logger->errorOnce('config-' . $name, sprintf('The %s purger is misconfigured: %s', $name, $e->getMessage()));
+            return PurgeResult::failure($name, $urls, 'misconfigured: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            $this->logger->error(sprintf('The %s purger failed: %s: %s', $name, get_class($e), $e->getMessage()));
+            return PurgeResult::failure($name, $urls, get_class($e) . ': ' . $e->getMessage());
+        }
+        if (!$result->isSuccess()) {
+            $this->logger->error('Purge incomplete. ' . $result->summary());
+        } else {
+            $this->logger->debug('Purged. ' . $result->summary());
+        }
+        return $result;
     }
 }

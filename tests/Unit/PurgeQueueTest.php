@@ -57,15 +57,82 @@ final class PurgeQueueTest extends TestCase
         $this->assertSame([], RecordingPurger::$log, 'nothing is sent before the flush');
 
         $results = $queue->flush();
-        $this->assertCount(3, RecordingPurger::$log);
-        $this->assertCount(3, $results);
-        $posts = array_map(static fn (array $e): string => $e['urls'][0], RecordingPurger::$log);
-        sort($posts);
-        $this->assertSame(['https://example.com/post-1/', 'https://example.com/post-2/', 'https://example.com/post-3/'], $posts);
+        $this->assertCount(1, RecordingPurger::$log, 'the three sets go to the purger in one call');
+        $this->assertCount(1, $results);
+        $urls = RecordingPurger::$log[0]['urls'];
+        sort($urls);
+        $this->assertSame([
+            'https://example.com/post-1/',
+            'https://example.com/post-1/feed/',
+            'https://example.com/post-2/',
+            'https://example.com/post-2/feed/',
+            'https://example.com/post-3/',
+            'https://example.com/post-3/feed/',
+        ], $urls, 'each set exactly once');
+        $this->assertSame('status_to_approved', RecordingPurger::$log[0]['reason']);
         $this->assertCount(1, \WpStub::firings('comments_through_cache_purged'));
 
         $this->assertSame([], $queue->flush(), 'a second flush sends nothing');
-        $this->assertCount(3, RecordingPurger::$log);
+        $this->assertCount(1, RecordingPurger::$log);
+    }
+
+    public function testBulkModerationSendsOneCloudflareRequestForManyPosts(): void
+    {
+        $client = new FakeHttpClient(static fn (): HttpResponse => new HttpResponse(200, [], '{"success":true}'));
+        $queue = $this->queue([new CloudflarePurger($client, str_repeat('a', 32), 'token')]);
+        for ($post = 1; $post <= 3; $post++) {
+            $queue->add($post, 'status_to_approved');
+        }
+        $results = $queue->flush();
+        $this->assertCount(1, $client->requests, 'six URLs from three posts fit one batch');
+        $this->assertTrue($results[0]->isSuccess());
+        $this->assertCount(6, $results[0]->attempted());
+    }
+
+    public function testDifferentReasonsGetOneCallEachAndOriginFinishesBeforeEdge(): void
+    {
+        $queue = $this->queue([new RecordingPurger('cdn', Purger::LAYER_EDGE), new RecordingPurger('file')]);
+        $queue->add(1, 'status_to_approved');
+        $queue->add(2, 'status_from_approved');
+        $queue->add(3, 'status_to_approved');
+        $queue->flush();
+        $this->assertSame(
+            [
+                ['file', 'status_to_approved'],
+                ['file', 'status_from_approved'],
+                ['cdn', 'status_to_approved'],
+                ['cdn', 'status_from_approved'],
+            ],
+            array_map(static fn (array $e): array => [$e['purger'], $e['reason']], RecordingPurger::$log)
+        );
+        $this->assertCount(4, RecordingPurger::$log[0]['urls']);
+    }
+
+    public function testAUrlSharedByTwoPostsIsPurgedOnce(): void
+    {
+        add_filter('comments_through_cache_purge_urls', static function (array $urls): array {
+            $urls[] = 'https://example.com/';
+            return $urls;
+        });
+        $queue = $this->queue([new RecordingPurger('file')]);
+        $queue->add(1, 'manual');
+        $queue->add(2, 'manual');
+        $queue->flush();
+        $urls = RecordingPurger::$log[0]['urls'];
+        $this->assertCount(1, array_keys($urls, 'https://example.com/', true));
+        $this->assertCount(5, $urls);
+    }
+
+    public function testShutdownSurvivesAThrowingPurgeFilter(): void
+    {
+        $plugin = new Plugin($this->config(), $this->logger(), new FakeResponse(), new FakeHttpClient());
+        add_filter('comments_through_cache_purge_urls', static function (): array {
+            throw new \RuntimeException('filter broke');
+        });
+        $plugin->queue()->add(1, 'manual');
+        $plugin->onShutdown();
+        $this->assertCount(1, $this->logLines);
+        $this->assertStringContainsString('The purge flush failed: RuntimeException: filter broke', $this->logLines[0]);
     }
 
     public function testShutdownHandlerFlushes(): void
@@ -162,8 +229,10 @@ final class PurgeQueueTest extends TestCase
         $queue->add(2, 'manual');
         $results = $queue->flush();
 
-        $this->assertSame(['file', 'file'], array_column(RecordingPurger::$log, 'purger'));
-        $this->assertCount(4, $results);
+        $this->assertSame(['file'], array_column(RecordingPurger::$log, 'purger'));
+        $this->assertCount(4, RecordingPurger::$log[0]['urls'], 'both posts reach the file purger');
+        $this->assertCount(2, $results);
+        $this->assertSame('file', $results[0]->purger());
         $this->assertFalse($results[1]->isSuccess());
         $this->assertStringContainsString('misconfigured', $results[1]->errors()[0]);
         $this->assertCount(1, $this->logLines, 'logged once per request');
@@ -182,9 +251,9 @@ final class PurgeQueueTest extends TestCase
         $results = $queue->flush();
 
         $this->assertSame(['slow'], array_column(RecordingPurger::$log, 'purger'));
-        $this->assertCount(4, $results);
+        $this->assertCount(2, $results);
         $this->assertSame(['purge budget exceeded'], $results[1]->errors());
-        $this->assertSame(3, count(array_filter($this->logLines, static fn (string $l): bool => str_contains($l, 'Purge budget exceeded'))));
+        $this->assertSame(1, count(array_filter($this->logLines, static fn (string $l): bool => str_contains($l, 'Purge budget exceeded'))));
     }
 
     public function testT43DeadlineAwarePurgerStopsMidList(): void

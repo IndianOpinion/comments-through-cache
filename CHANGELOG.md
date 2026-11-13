@@ -22,7 +22,8 @@ All notable changes to this project are documented here. The format follows
   `comments_through_cache_held_notice()` template function.
 - Targeted purge of the article, its comment pages and its comments feed on
   approve, unapprove, spam, trash, restore, delete and edit. Queued per post,
-  flushed once at shutdown, origin before edge, time-boxed.
+  merged into one call per purger at shutdown, origin before edge,
+  time-boxed.
 - Purgers: action (default), http (purge endpoint), file (nginx cache files)
   and cloudflare (purge by URL in batches of 30). Each can be turned off
   through a filter.
