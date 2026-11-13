@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<ruleset name="comments-through-cache">
+    <description>PSR-12 for the plugin, its tests and examples.</description>
+    <file>src</file>
+    <file>tests</file>
+    <file>examples</file>
+    <file>comments-through-cache.php</file>
+    <file>uninstall.php</file>
+    <exclude-pattern>vendor/*</exclude-pattern>
+    <arg name="extensions" value="php"/>
+    <arg name="colors"/>
+    <arg value="sp"/>
+
+    <rule ref="PSR12">
+        <!-- WordPress hooks and core classes use snake_case names. -->
+        <exclude name="PSR1.Methods.CamelCapsMethodName"/>
+    </rule>
+    <rule ref="Generic.Files.LineLength">
+        <properties>
+            <property name="lineLimit" value="180"/>
+            <property name="absoluteLineLimit" value="0"/>
+        </properties>
+    </rule>
+    <!-- The stub layer declares WordPress's global classes and functions in one file. -->
+    <rule ref="PSR1.Classes.ClassDeclaration.MultipleClasses">
+        <exclude-pattern>tests/stubs/*</exclude-pattern>
+    </rule>
+    <rule ref="PSR1.Files.SideEffects">
+        <exclude-pattern>tests/stubs/*</exclude-pattern>
+        <exclude-pattern>tests/phpstan-bootstrap.php</exclude-pattern>
+        <exclude-pattern>examples/*</exclude-pattern>
+        <exclude-pattern>src/functions.php</exclude-pattern>
+        <exclude-pattern>src/autoload.php</exclude-pattern>
+    </rule>
+    <rule ref="Squiz.Classes.ValidClassName">
+        <exclude-pattern>tests/stubs/*</exclude-pattern>
+    </rule>
+    <rule ref="PSR1.Classes.ClassDeclaration.MissingNamespace">
+        <exclude-pattern>tests/stubs/*</exclude-pattern>
+    </rule>
+</ruleset>
