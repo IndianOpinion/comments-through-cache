@@ -354,3 +354,5 @@ URL. A FAIL on the cookie line means a cache layer ignores the cookie.
 ## Licence
 
 MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Indian Opinion.
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
